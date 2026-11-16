@@ -1,0 +1,16 @@
+# Python
+.venv/
+__pycache__/
+*.pyc
+
+# IDE·OS
+.idea/
+.vscode/
+.DS_Store
+
+# 비밀 정보 (나중에 API 키를 쓸 때 대비)
+.env
+
+# 원본 파일과 개인 실습 기록 (공개하지 않음)
+data/*.hwp
+notes.md
