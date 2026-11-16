@@ -2,3 +2,6 @@
 sentence-transformers==6.2.0
 # Elasticsearch 9.x 서버용 클라이언트
 elasticsearch>=9,<10
+# 검색 API 서버
+fastapi
+uvicorn
