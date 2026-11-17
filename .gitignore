@@ -14,3 +14,8 @@ __pycache__/
 # 원본 파일과 개인 실습 기록 (공개하지 않음)
 data/*.hwp
 notes.md
+
+# Kotlin MCP 서버 빌드 결과물
+build/
+.gradle/
+.kotlin/

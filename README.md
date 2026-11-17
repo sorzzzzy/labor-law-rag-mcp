@@ -2,7 +2,7 @@
 
 근로기준법을 조·항 단위로 검색해 근거 조항과 출처를 돌려주는 검색 파이프라인을 직접 만들고, 이를 MCP 도구로 Claude에 연결해 근거 기반으로 답하게 하는 실습입니다.
 
-> 진행 중인 실습입니다. 현재 RAG 검색까지 완료했고, MCP 연결을 진행할 예정입니다.
+> RAG 검색, Kotlin MCP 서버 연결, 도구 설명에 따른 Claude의 행동 비교까지 완료했습니다.
 
 ## 구조
 
@@ -10,7 +10,7 @@
 Claude 데스크톱 앱 (답변 생성)
    │  stdio · JSON-RPC
    ▼
-Kotlin MCP 서버 ── search_labor_law 도구        ← 진행 예정
+Kotlin MCP 서버 ── search_labor_law 도구
    │  HTTP
    ▼
 검색 API (Python, FastAPI) ── Elasticsearch 9.3.8 (nori + dense_vector)
@@ -24,14 +24,15 @@ Kotlin MCP 서버 ── search_labor_law 도구        ← 진행 예정
 - [x] bge-m3 임베딩과 색인 (`index.py`)
 - [x] BM25 · kNN · 하이브리드(RRF 직접 구현) 검색 비교 (`search.py`)
 - [x] 검색 API (`api.py`)
-- [ ] Kotlin MCP 서버와 Claude 데스크톱 앱 연결
+- [x] Kotlin MCP 서버 구현 (`mcp-server/`)과 Claude 데스크톱 앱 연결
+- [x] 도구 설명(V1/V2)에 따른 도구 호출·검색어·출처 표시 비교
 
 ## 기술 스택
 
 - Elasticsearch 9.3.8, analysis-nori (Docker)
 - Python 3.12, sentence-transformers, 임베딩 모델 BAAI/bge-m3 (1024차원)
 - FastAPI, uvicorn
-- (예정) Kotlin, MCP Kotlin SDK
+- Kotlin 2.4, MCP Kotlin SDK 0.16.0 (stdio), Gradle 8.14
 
 ## 설계에서 정한 것
 
@@ -52,6 +53,24 @@ Kotlin MCP 서버 ── search_labor_law 도구        ← 진행 예정
 
 - 일상 표현 질문("회사가 갑자기 내일부터 나오지 말라고 하면…")은 법률 용어("해고의 예고")와 겹치는 단어가 없어 BM25가 찾지 못했습니다.
 - 하이브리드가 kNN보다 낮았습니다. RRF에서는 두 검색의 후보에 모두 걸친 문서가 한쪽에서만 1위인 문서보다 항상 점수가 높아, BM25가 빗나간 질문에서는 kNN의 정답이 밀려났습니다. 그래서 검색 API의 기본 방식은 kNN으로 정했습니다.
+
+## 도구 설명에 따른 Claude 행동 비교
+
+LLM은 도구의 이름과 설명을 보고 언제 도구를 쓸지, 검색어를 어떻게 만들지 정합니다. 코드는 그대로 두고 도구 설명만 두 가지로 바꿔, Claude 데스크톱 앱에서 같은 질문 3개를 새 채팅마다 물어봤습니다.
+
+- **V1:** "근로기준법 조항을 검색합니다." (검색어 설명: "검색어")
+- **V2:** 근로기준법 관련 질문에는 기억 대신 이 도구로 근거를 찾을 것, 일상 표현은 법률 용어로 바꿔 검색할 것, 주제가 여러 개면 나눠서 검색할 것, 답변에 조·항 출처를 표시할 것 ([`Main.kt`](mcp-server/src/main/kotlin/Main.kt))
+
+| 질문 | V1 | V2 |
+|---|---|---|
+| 근로기준법상 연차 유급휴가는 며칠이야? | 도구 1회 + 웹 검색. "상시 5명 이상 사업장 적용"은 웹에서 가져옴 | 도구 2회(연차 일수 / 5명 미만 적용 범위), 웹 검색 없음. 문장마다 조·항 출처 표시 |
+| 회사가 갑자기 내일부터 나오지 말래. 원래 미리 알려줘야 하는 거 아니야? | 웹 검색 후 도구 1회. 검색어 하나에 주제 4개를 넣어 정답(제26조)이 6위로 빠짐. 핵심 내용은 웹으로 채움 | 주제별로 도구 4회, 네 번 모두 정답 조항 1위. 제26조 단서의 예외 3가지를 원문대로 인용 |
+| 오늘 저녁 메뉴 추천해줘 | 도구 호출 없음 | 도구 호출 없음 |
+
+- 도구 설명만 바꿔도 도구 호출 시점, 검색어 구성, 출처 표시가 달라졌습니다.
+- 주제가 섞인 검색어("해고의 예고 서면통지 부당해고 구제신청")에서는 kNN·BM25·하이브리드 모두 제26조를 5~6위에 두었고, "해고의 예고"만 넣으면 1위였습니다. 검색 방식보다 검색어를 주제별로 나누는 효과가 커서, 이 결과를 V2 설명에 반영했습니다.
+- V1의 해고 질문은 검색이 정답을 놓쳤는데도 최종 답변은 맞았습니다. Claude가 학습한 지식과 웹 검색으로 빈자리를 채웠기 때문입니다. 답변만 봐서는 검색 실패를 알 수 없어, 검색 단계를 따로 평가해야 합니다.
+- 한계: Claude 앱에서는 웹 검색을 끌 수 없어 두 버전 모두 웹 내용이 일부 섞였습니다. 또 법률만 색인해서, 시행령에 있는 내용(5명 미만 사업장에 적용되는 조항 목록)은 도구로 답하지 못했습니다.
 
 ## 실행 방법
 
@@ -76,7 +95,28 @@ python search.py --eval
 # 5. 검색 API
 uvicorn api:app --port 8000
 # http://localhost:8000/docs
+
+# 6. MCP 서버 빌드
+cd mcp-server && ./gradlew installDist
+# → build/install/labor-law-mcp/bin/labor-law-mcp 를 Claude 데스크톱 앱 설정(mcpServers)에 등록
 ```
+
+## Claude 데스크톱 앱 연결
+
+`claude_desktop_config.json`의 `mcpServers`에 등록합니다. 앱이 MCP 서버를 직접 실행하고 stdio로 JSON-RPC 메시지를 주고받습니다.
+
+```json
+{
+  "mcpServers": {
+    "labor-law": {
+      "command": "/절대경로/rag-practice/mcp-server/build/install/labor-law-mcp/bin/labor-law-mcp",
+      "env": { "JAVA_HOME": "/JDK17 경로/Contents/Home" }
+    }
+  }
+}
+```
+
+검색 API(`uvicorn api:app --port 8000`)가 실행 중이어야 도구가 결과를 돌려줍니다.
 
 ## 데이터 출처
 
