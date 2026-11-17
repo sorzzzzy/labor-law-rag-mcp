@@ -2,7 +2,7 @@
 
 근로기준법을 조·항 단위로 검색해 근거 조항과 출처를 돌려주는 검색 파이프라인을 직접 만들고, 이를 MCP 도구로 Claude에 연결해 근거 기반으로 답하게 하는 실습입니다.
 
-> 진행 중인 실습입니다. 현재 RAG 검색까지 완료했고, MCP 연결을 진행할 예정입니다.
+> 진행 중인 실습입니다. RAG 검색과 Kotlin MCP 서버 연결까지 완료했고, 도구 설명에 따른 Claude의 행동 비교를 진행할 예정입니다.
 
 ## 구조
 
@@ -10,7 +10,7 @@
 Claude 데스크톱 앱 (답변 생성)
    │  stdio · JSON-RPC
    ▼
-Kotlin MCP 서버 ── search_labor_law 도구        ← 진행 예정
+Kotlin MCP 서버 ── search_labor_law 도구
    │  HTTP
    ▼
 검색 API (Python, FastAPI) ── Elasticsearch 9.3.8 (nori + dense_vector)
@@ -24,14 +24,15 @@ Kotlin MCP 서버 ── search_labor_law 도구        ← 진행 예정
 - [x] bge-m3 임베딩과 색인 (`index.py`)
 - [x] BM25 · kNN · 하이브리드(RRF 직접 구현) 검색 비교 (`search.py`)
 - [x] 검색 API (`api.py`)
-- [ ] Kotlin MCP 서버와 Claude 데스크톱 앱 연결
+- [x] Kotlin MCP 서버 구현 (`mcp-server/`)과 Claude 데스크톱 앱 연결
+- [ ] 도구 설명(V1/V2)에 따른 도구 호출·검색어·출처 표시 비교
 
 ## 기술 스택
 
 - Elasticsearch 9.3.8, analysis-nori (Docker)
 - Python 3.12, sentence-transformers, 임베딩 모델 BAAI/bge-m3 (1024차원)
 - FastAPI, uvicorn
-- (예정) Kotlin, MCP Kotlin SDK
+- Kotlin 2.4, MCP Kotlin SDK 0.16.0 (stdio), Gradle 8.14
 
 ## 설계에서 정한 것
 
@@ -76,7 +77,27 @@ python search.py --eval
 # 5. 검색 API
 uvicorn api:app --port 8000
 # http://localhost:8000/docs
+# 6. MCP 서버 빌드
+cd mcp-server && ./gradlew installDist
+# → build/install/labor-law-mcp/bin/labor-law-mcp 를 Claude 데스크톱 앱 설정(mcpServers)에 등록
 ```
+
+## Claude 데스크톱 앱 연결
+
+`claude_desktop_config.json`의 `mcpServers`에 등록합니다. 앱이 MCP 서버를 직접 실행하고 stdio로 JSON-RPC 메시지를 주고받습니다.
+
+```json
+{
+  "mcpServers": {
+    "labor-law": {
+      "command": "/절대경로/rag-practice/mcp-server/build/install/labor-law-mcp/bin/labor-law-mcp",
+      "env": { "JAVA_HOME": "/JDK17 경로/Contents/Home" }
+    }
+  }
+}
+```
+
+검색 API(`uvicorn api:app --port 8000`)가 실행 중이어야 도구가 결과를 돌려줍니다.
 
 ## 데이터 출처
 
