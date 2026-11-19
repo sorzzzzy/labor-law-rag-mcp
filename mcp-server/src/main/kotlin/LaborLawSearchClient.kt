@@ -6,11 +6,13 @@ import kotlinx.serialization.json.contentOrNull
 import kotlinx.serialization.json.jsonArray
 import kotlinx.serialization.json.jsonObject
 import kotlinx.serialization.json.jsonPrimitive
+import java.net.ConnectException
 import java.net.URI
 import java.net.URLEncoder
 import java.net.http.HttpClient
 import java.net.http.HttpRequest
 import java.net.http.HttpResponse
+import java.net.http.HttpTimeoutException
 import java.nio.charset.StandardCharsets
 import java.time.Duration
 
@@ -43,9 +45,40 @@ class LaborLawSearchClient(private val baseUrl: String) {
         val response = withContext(Dispatchers.IO) {
             http.send(request, HttpResponse.BodyHandlers.ofString(StandardCharsets.UTF_8))
         }
-        check(response.statusCode() == 200) { "검색 API 응답 코드 ${response.statusCode()}" }
+        // 200이 아니면 상태 코드를 담은 예외를 던진다 (failureMessage에서 4xx/5xx를 나눠 안내하려고)
+        if (response.statusCode() != 200) throw SearchApiStatusException(response.statusCode())
 
         format(query, Json.parseToJsonElement(response.body()).jsonObject)
+    }
+
+    /**
+     * 실패 원인을 Claude가 읽을 에러 문구로 바꾼다.
+     *
+     * 에러 문구도 Claude가 읽고 다음 행동을 정하는 입력이다. 그래서 세 가지를 담는다.
+     *   1) 원인: 연결 실패인지, 시간 초과인지, 요청 값 문제인지, 서버 내부 오류인지
+     *   2) 다시 시도할 만한지
+     *   3) 끝내 실패하면 어떻게 할지: 다른 출처로 추측하지 말고 사용자에게 먼저 알릴 것
+     * 이 문구는 사용자에게 그대로 전달될 수 있어서, 서버 이름(uvicorn)이나 예외 이름 같은 운영자용 정보는 넣지 않는다.
+     * (운영자용 정보는 Main.kt에서 로그로 따로 남긴다)
+     */
+    fun failureMessage(e: Throwable): String {
+        val (cause, retry) = when (e) {
+            // 검색 API가 꺼져 있음.
+            // JDK HttpClient의 ConnectException은 message가 null인 경우가 있어서 e.message를 그대로 쓰지 않는다
+            // (수정 전에는 "호출에 실패했습니다: null"로 찍혔다)
+            is ConnectException -> "근로기준법 검색 시스템에 연결할 수 없습니다." to NO_RETRY
+            // 연결(3초) 또는 응답(30초) 시간 초과. 일시적인 지연일 수 있다
+            is HttpTimeoutException -> "근로기준법 검색 시스템의 응답 시간이 초과되었습니다." to RETRY_ONCE
+            // 4xx는 요청 값 문제(고쳐서 다시 보내면 됨), 5xx는 검색 시스템 내부 문제(예: Elasticsearch가 꺼짐)
+            is SearchApiStatusException ->
+                if (e.status in 400..499) {
+                    "검색 요청 값이 올바르지 않습니다(응답 코드 ${e.status}). query는 비어 있지 않은 문자열, k는 1~10 사이 정수여야 합니다." to RETRY_ONCE
+                } else {
+                    "근로기준법 검색 시스템 내부에서 오류가 발생했습니다(응답 코드 ${e.status})." to NO_RETRY
+                }
+            else -> "근로기준법 검색 중 알 수 없는 오류가 발생했습니다." to NO_RETRY
+        }
+        return "검색 실패: $cause $retry $ON_FAILURE"
     }
 
     /**
@@ -84,3 +117,13 @@ class LaborLawSearchClient(private val baseUrl: String) {
         }
     }
 }
+
+/** 검색 API가 200이 아닌 응답을 돌려줬을 때 던지는 예외. 상태 코드를 보고 에러 문구를 고르려고 따로 둔다 */
+class SearchApiStatusException(val status: Int) : RuntimeException("검색 API 응답 코드 $status")
+
+// 에러 문구에 붙일 안내 (failureMessage에서 사용)
+private const val NO_RETRY = "다시 시도해도 같은 결과일 가능성이 높으니 재시도하지 마세요."
+private const val RETRY_ONCE = "일시적인 문제일 수 있으니 한 번만 다시 시도하세요."
+private const val ON_FAILURE =
+    "검색에 실패한 상태에서는 웹 검색이나 기억으로 조문을 대신 찾지 말고, " +
+        "지금은 근로기준법 근거 조항을 확인할 수 없다는 사실을 답변 첫머리에서 사용자에게 먼저 알리세요."

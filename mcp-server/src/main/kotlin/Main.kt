@@ -18,9 +18,13 @@ import kotlinx.serialization.json.intOrNull
 import kotlinx.serialization.json.jsonPrimitive
 import kotlinx.serialization.json.put
 import kotlinx.serialization.json.putJsonObject
+import org.slf4j.LoggerFactory
 
 /** 어제 만든 검색 API 주소 (uvicorn api:app --port 8000) */
 const val SEARCH_API_URL = "http://localhost:8000/search"
+
+/** 운영자용 로그. slf4j-simple이 stderr로 출력하고, Claude 앱이 이를 MCP 로그 파일에 남긴다 */
+private val log = LoggerFactory.getLogger("labor-law")
 
 /**
  * 도구 설명 문구.
@@ -94,7 +98,7 @@ fun main() {
         val query = request.arguments?.get("query")?.jsonPrimitive?.contentOrNull
         if (query.isNullOrBlank()) {
             return@addTool CallToolResult(
-                content = listOf(TextContent("query 파라미터가 필요합니다.")),
+                content = listOf(TextContent("검색 실패: query 값이 비어 있습니다. 검색할 내용을 넣어 다시 요청하세요.")),
                 isError = true,
             )
         }
@@ -104,10 +108,14 @@ fun main() {
         searchClient.search(query, k).fold(
             onSuccess = { text -> CallToolResult(content = listOf(TextContent(text))) },
             onFailure = { e ->
+                // 운영자용 상세 원인(예외 이름, 메시지, 확인할 곳)은 로그로만 남긴다
+                log.warn(
+                    "검색 API 호출 실패: query='{}', {}: {} (검색 API(uvicorn)가 실행 중인지 확인)",
+                    query, e::class.java.name, e.message,
+                )
+                // Claude에게는 원인, 다시 시도할 만한지, 실패했을 때 할 일만 담은 문구를 돌려준다
                 CallToolResult(
-                    content = listOf(
-                        TextContent("근로기준법 검색 API 호출에 실패했습니다: ${e.message}. 검색 API(uvicorn)가 실행 중인지 확인하세요."),
-                    ),
+                    content = listOf(TextContent(searchClient.failureMessage(e))),
                     isError = true,
                 )
             },
