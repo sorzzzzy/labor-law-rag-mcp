@@ -2,10 +2,12 @@
 
 흐름: chunks.jsonl 읽기 → 인덱스 새로 만들기(매핑) → bge-m3로 임베딩 → 일괄 색인(bulk)
 
-사용법: python index.py data/chunks.jsonl
+사용법
+  python index.py data/chunks.jsonl                                              # 기본 인덱스(labor_law)
+  python index.py data/chunks.jsonl --index labor_law_noheader --no-header       # 실험용: 상위 제목 없이
 """
+import argparse  # 실행할 때 넘긴 옵션(--index 등)을 읽는다 (sys.argv를 직접 다루는 것보다 편함)
 import json
-import sys
 
 import torch
 from elasticsearch import Elasticsearch, helpers
@@ -62,11 +64,11 @@ def load_chunks(path):
         return [json.loads(line) for line in f]
 
 
-def create_index(es):
+def create_index(es, index):
     """같은 이름의 인덱스가 있으면 지우고 새로 만든다 (실습이라 매번 깨끗하게)."""
-    if es.indices.exists(index=INDEX):
-        es.indices.delete(index=INDEX)
-    es.indices.create(index=INDEX, settings=SETTINGS, mappings=MAPPINGS)
+    if es.indices.exists(index=index):
+        es.indices.delete(index=index)
+    es.indices.create(index=index, settings=SETTINGS, mappings=MAPPINGS)
 
 
 def embed(chunks):
@@ -82,40 +84,57 @@ def embed(chunks):
     return vectors.tolist()
 
 
-def index_chunks(es, chunks, vectors):
+def index_chunks(es, chunks, vectors, index):
     """청크와 벡터를 묶어 bulk API로 한 번에 색인한다."""
     actions = (
         {
-            "_index": INDEX,
+            "_index": index,
             "_id": c["id"],                        # 같은 id면 덮어쓴다 → 다시 실행해도 중복이 안 생김
             "_source": {**c, "embedding": vec},
         }
         for c, vec in zip(chunks, vectors)
     )
     ok, errors = helpers.bulk(es, actions, raise_on_error=False)
-    es.indices.refresh(index=INDEX)                # 방금 넣은 문서가 바로 검색되도록
+    es.indices.refresh(index=index)                # 방금 넣은 문서가 바로 검색되도록
     return ok, errors
 
 
-def main(path):
+def main(path, index, no_header):
     es = Elasticsearch(ES_URL)
     print(f"Elasticsearch {es.info()['version']['number']} 연결")
 
     chunks = load_chunks(path)
     print(f"청크 {len(chunks)}개 읽음")
 
-    create_index(es)
-    print(f"인덱스 '{INDEX}' 생성")
+    if no_header:
+        # 실험용: 상위 제목 줄("근로기준법 > 장 > 조(제목)")을 빼고 원문(text)만 남긴다.
+        # content는 BM25 검색과 임베딩 둘 다에 쓰이므로, 두 검색 모두 상위 제목 없이 비교하게 된다.
+        chunks = [{**c, "content": c["text"]} for c in chunks]
+        print("상위 제목 없이 원문만으로 색인합니다 (--no-header)")
+
+    create_index(es, index)
+    print(f"인덱스 '{index}' 생성")
 
     vectors = embed(chunks)
     print(f"임베딩 완료: {len(vectors)}개 x {len(vectors[0])}차원")
 
-    ok, errors = index_chunks(es, chunks, vectors)
+    ok, errors = index_chunks(es, chunks, vectors, index)
     print(f"색인 성공 {ok}개, 실패 {len(errors)}개")
 
-    count = es.count(index=INDEX)["count"]
+    count = es.count(index=index)["count"]
     print(f"인덱스 문서 수: {count} (청크 수 {len(chunks)}와 같아야 정상)")
 
 
 if __name__ == "__main__":
-    main(sys.argv[1])
+    parser = argparse.ArgumentParser(description="청크를 임베딩해 Elasticsearch에 색인한다")
+    parser.add_argument("path", help="청크 파일 (예: data/chunks.jsonl)")
+    parser.add_argument("--index", default=INDEX, help=f"만들 인덱스 이름 (기본 {INDEX})")
+    parser.add_argument("--no-header", action="store_true",
+                        help="실험용: 청크 앞 상위 제목을 빼고 원문만으로 색인")
+    args = parser.parse_args()
+
+    # 실수로 기본 인덱스를 상위 제목 없는 버전으로 덮어쓰지 않게 막는다 (검색 API가 기본 인덱스를 쓰고 있음)
+    if args.no_header and args.index == INDEX:
+        parser.error(f"--no-header를 쓸 때는 --index로 {INDEX}가 아닌 다른 이름을 지정하세요")
+
+    main(args.path, args.index, args.no_header)

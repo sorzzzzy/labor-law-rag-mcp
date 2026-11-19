@@ -33,7 +33,8 @@ def source_label(d):
 @app.get("/search")
 def search_law(
     q: str = Query(..., description="검색할 질문이나 키워드"),
-    # 기본값을 knn으로 둔 이유: 5단계 평가(질문 8개)에서 knn이 8/8로 가장 좋았다
+    # 기본값을 knn으로 둔 이유: 평가(질문 20개 + 검증용 8개)에서 정답 순위(MRR)가 가장 좋았다.
+    # 조정한 하이브리드는 recall@5가 조금 높았지만 그 차이가 검증용 질문에서 재현되지 않아 전환을 보류했다.
     mode: Literal["knn", "bm25", "hybrid"] = Query("knn", description="검색 방식"),
     k: int = Query(5, ge=1, le=20, description="돌려받을 조항 수"),
 ):
